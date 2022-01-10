@@ -1,5 +1,6 @@
 package com.github.trahulsam1997.kafka.tutorial3;
 
+import com.google.gson.JsonParser;
 import org.apache.http.HttpHost;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.UsernamePasswordCredentials;
@@ -11,6 +12,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.elasticsearch.action.bulk.BulkRequest;
 import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.action.index.IndexResponse;
 import org.elasticsearch.client.RequestOptions;
@@ -73,6 +75,16 @@ public class ElasticSearchConsumer {
         return consumer;
     }
 
+    private static JsonParser jsonParser = new JsonParser();
+
+    private static String extractIdFromTweet(String tweetJson) {
+
+            return jsonParser.parse(tweetJson)
+                    .getAsJsonObject()
+                    .get("is_str")
+                    .getAsString();
+    }
+
     public static void main(String[] args) throws IOException {
         Logger logger = LoggerFactory.getLogger(ElasticSearchConsumer.class.getName());
         RestHighLevelClient client = createClient();
@@ -83,17 +95,21 @@ public class ElasticSearchConsumer {
             ConsumerRecords<String, String> records =
                     consumer.poll(Duration.ofMillis(100));
 
+            BulkRequest bulkRequest = new BulkRequest();
+
             for (ConsumerRecord<String, String> record : records) {
 
-                IndexRequest indexRequest = new IndexRequest(
-                        "twitter",
-                        "tweets"
-                ).source(record.value(), XContentType.JSON);
+                // Kafka generic ID
+//                String id = record.topic() + "_" + record.partition() + "_" + record.offset();
 
-                IndexResponse indexResponse = client.index(indexRequest, RequestOptions.DEFAULT);
-                String id = indexResponse.getId();
-                logger.info(id);
+                // Twitter feed specific ID
+                String id = extractIdFromTweet(record.value());
 
+                IndexRequest indexRequest = new IndexRequest("tweets")
+                        .source(record.value(), XContentType.JSON)
+                        .id(id);
+
+                bulkRequest.add(indexRequest);
                 try {
                     Thread.sleep(1000);
                 } catch (InterruptedException e) {
