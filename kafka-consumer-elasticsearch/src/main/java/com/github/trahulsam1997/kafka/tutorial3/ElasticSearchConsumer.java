@@ -12,7 +12,9 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.elasticsearch.action.admin.indices.create.CreateIndexRequest;
 import org.elasticsearch.action.bulk.BulkRequest;
+import org.elasticsearch.action.bulk.BulkResponse;
 import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.action.index.IndexResponse;
 import org.elasticsearch.client.RequestOptions;
@@ -20,6 +22,7 @@ import org.elasticsearch.client.RestClient;
 import org.elasticsearch.client.RestClientBuilder;
 import org.elasticsearch.client.RestHighLevelClient;
 import org.elasticsearch.common.xcontent.XContentType;
+import org.elasticsearch.index.mapper.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,6 +34,18 @@ import java.util.Properties;
 public class ElasticSearchConsumer {
 
     public static RestHighLevelClient createClient(){
+
+        //////////////////////////
+        /////////// IF YOU USE LOCAL ELASTICSEARCH
+        //////////////////////////
+
+        //  String hostname = "localhost";
+        //  RestClientBuilder builder = RestClient.builder(new HttpHost(hostname,9200,"http"));
+
+
+        //////////////////////////
+        /////////// IF YOU USE BONSAI / HOSTED ELASTICSEARCH
+        //////////////////////////
 
         // replace with your own credentials
         String hostname = System.getenv("ELASTIC_SEARCH_HOSTNAME");
@@ -55,34 +70,37 @@ public class ElasticSearchConsumer {
         return client;
     }
 
-    public static KafkaConsumer<String, String> createConsumer(String topic) {
+    public static KafkaConsumer<String, String> createConsumer(String topic){
 
-        String bootsrapServers = "127.0.0.1:9092";
+        String bootstrapServers = "127.0.0.1:9092";
         String groupId = "kafka-demo-elasticsearch";
 
         // create consumer configs
         Properties properties = new Properties();
-        properties.setProperty(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootsrapServers);
+        properties.setProperty(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers);
         properties.setProperty(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         properties.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
         properties.setProperty(ConsumerConfig.GROUP_ID_CONFIG, groupId);
         properties.setProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        properties.setProperty(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false"); // disable auto commit of offsets
+        properties.setProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "100"); // disable auto commit of offsets
 
         // create consumer
         KafkaConsumer<String, String> consumer = new KafkaConsumer<String, String>(properties);
         consumer.subscribe(Arrays.asList(topic));
 
         return consumer;
+
     }
 
     private static JsonParser jsonParser = new JsonParser();
 
-    private static String extractIdFromTweet(String tweetJson) {
-
-            return jsonParser.parse(tweetJson)
-                    .getAsJsonObject()
-                    .get("is_str")
-                    .getAsString();
+    private static String extractIdFromTweet(String tweetJson){
+        // gson library
+        return jsonParser.parse(tweetJson)
+                .getAsJsonObject()
+                .get("id_str")
+                .getAsString();
     }
 
     public static void main(String[] args) throws IOException {
@@ -91,25 +109,43 @@ public class ElasticSearchConsumer {
 
         KafkaConsumer<String, String> consumer = createConsumer("twitter_tweets");
 
-         while(true) {
+        while(true){
             ConsumerRecords<String, String> records =
-                    consumer.poll(Duration.ofMillis(100));
+                    consumer.poll(Duration.ofMillis(100)); // new in Kafka 2.0.0
+
+            Integer recordCount = records.count();
+            logger.info("Received " + recordCount + " records");
 
             BulkRequest bulkRequest = new BulkRequest();
 
-            for (ConsumerRecord<String, String> record : records) {
+            for (ConsumerRecord<String, String> record : records){
 
-                // Kafka generic ID
-//                String id = record.topic() + "_" + record.partition() + "_" + record.offset();
+                // 2 strategies
+                // kafka generic ID
+                // String id = record.topic() + "_" + record.partition() + "_" + record.offset();
 
-                // Twitter feed specific ID
-                String id = extractIdFromTweet(record.value());
+                // twitter feed specific id
+                try {
+                    String id = extractIdFromTweet(record.value());
 
-                IndexRequest indexRequest = new IndexRequest("tweets")
-                        .source(record.value(), XContentType.JSON)
-                        .id(id);
+                    // where we insert data into ElasticSearch
 
-                bulkRequest.add(indexRequest);
+                    IndexRequest indexRequest = new IndexRequest("tweets")
+                            .source(record.value(), XContentType.JSON)
+                            .id(id); // this is to make our consumer idempotent
+
+                    bulkRequest.add(indexRequest); // we add to our bulk request (takes no time)
+                } catch (NullPointerException e){
+                    logger.warn("skipping bad data: " + record.value());
+                }
+
+            }
+
+            if (recordCount > 0) {
+                BulkResponse bulkItemResponses = client.bulk(bulkRequest, RequestOptions.DEFAULT);
+                logger.info("Committing offsets...");
+                consumer.commitSync();
+                logger.info("Offsets have been committed");
                 try {
                     Thread.sleep(1000);
                 } catch (InterruptedException e) {
@@ -118,6 +154,8 @@ public class ElasticSearchConsumer {
             }
         }
 
-//        client.close();
+        // close the client gracefully
+        // client.close();
+
     }
 }
