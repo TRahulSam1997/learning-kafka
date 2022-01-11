@@ -124,7 +124,7 @@ public class ElasticSearchConsumer {
                 // kafka generic ID
                 // String id = record.topic() + "_" + record.partition() + "_" + record.offset();
 
-                // twitter feed specific id
+                // Twitter feed specific id
                 try {
                     String id = extractIdFromTweet(record.value());
 
@@ -134,7 +134,7 @@ public class ElasticSearchConsumer {
                             .source(record.value(), XContentType.JSON)
                             .id(id); // this is to make our consumer idempotent
 
-                    bulkRequest.add(indexRequest); // we add to our bulk request (takes no time)
+                    bulkRequest.add(indexRequest);
                 } catch (NullPointerException e){
                     logger.warn("skipping bad data: " + record.value());
                 }
